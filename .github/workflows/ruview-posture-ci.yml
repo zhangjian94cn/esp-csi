@@ -56,13 +56,31 @@ jobs:
         shell: bash
         working-directory: ${{ matrix.project }}
         run: |
-          mkdir -p artifact
+          mkdir -p artifact/bootloader artifact/partition_table
           cp build/flasher_args.json artifact/
           cp build/flash_args artifact/
-          cp build/bootloader/bootloader.bin artifact/
-          cp build/partition_table/partition-table.bin artifact/
+          cp build/bootloader/bootloader.bin artifact/bootloader/
+          cp build/partition_table/partition-table.bin artifact/partition_table/
           cp build/*.bin artifact/
-          sha256sum artifact/* > artifact/SHA256SUMS
+          (
+            cd artifact
+            find . -type f -not -name SHA256SUMS -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+            sha256sum -c SHA256SUMS
+            python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("flasher_args.json").read_text())
+          missing = [
+              path for path in manifest["flash_files"].values()
+              if not Path(path).is_file()
+          ]
+          if missing:
+              raise SystemExit(f"missing flash files: {missing}")
+          PY
+          )
 
       - uses: actions/upload-artifact@v4
         if: startsWith(matrix.name, 'posture-')
