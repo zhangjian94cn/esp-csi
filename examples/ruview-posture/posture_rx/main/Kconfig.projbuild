@@ -1,0 +1,7 @@
+menu "RuView posture receiver settings"
+
+config RVP_TX_MAC
+    string "Controlled sender Wi-Fi MAC"
+    default "28:84:85:92:81:3c"
+
+endmenu

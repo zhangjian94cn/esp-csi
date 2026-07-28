@@ -86,4 +86,5 @@ docs/docusaurus/website/node_modules
 # IDF package manager
 **/managed_components/
 **/*.lock
+!examples/ruview-posture/**/dependencies.lock
 **/.vscode

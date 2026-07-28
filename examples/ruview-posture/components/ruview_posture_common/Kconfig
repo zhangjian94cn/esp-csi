@@ -1,0 +1,17 @@
+menu "RuView posture common settings"
+
+config RVP_NODE_ID
+    int "Logical node identifier"
+    range 1 255
+    default 1
+
+config RVP_LED_ENABLE
+    bool "Enable the WS2812 identity LED"
+    default y
+
+config RVP_LED_GPIO
+    int "WS2812 identity LED GPIO"
+    depends on RVP_LED_ENABLE
+    default 48
+
+endmenu

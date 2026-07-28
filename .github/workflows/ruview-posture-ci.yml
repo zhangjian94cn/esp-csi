@@ -1,0 +1,65 @@
+name: RuView posture ESP32-S3
+
+on:
+  push:
+    branches:
+      - codex/s3-posture-poc
+  pull_request:
+    paths:
+      - "examples/ruview-posture/**"
+      - "examples/esp-radar/wifi_sensing_demo/**"
+      - ".github/workflows/ruview-posture-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.0
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: posture-tx
+            project: examples/ruview-posture/posture_tx
+            defaults: sdkconfig.defaults
+          - name: posture-rx-node2
+            project: examples/ruview-posture/posture_rx
+            defaults: sdkconfig.defaults
+          - name: posture-rx-node3
+            project: examples/ruview-posture/posture_rx
+            defaults: sdkconfig.defaults;sdkconfig.defaults.node3
+          - name: official-wifi-sensing
+            project: examples/esp-radar/wifi_sensing_demo
+            defaults: sdkconfig.defaults
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ESP32-S3 firmware
+        shell: bash
+        working-directory: ${{ matrix.project }}
+        env:
+          SDKCONFIG_DEFAULTS: ${{ matrix.defaults }}
+        run: |
+          idf.py set-target esp32s3
+          idf.py build
+          test -f build/flasher_args.json
+
+      - name: Collect flash artifacts
+        if: startsWith(matrix.name, 'posture-')
+        shell: bash
+        working-directory: ${{ matrix.project }}
+        run: |
+          mkdir -p artifact
+          cp build/flasher_args.json artifact/
+          cp build/flash_args artifact/
+          cp build/bootloader/bootloader.bin artifact/
+          cp build/partition_table/partition-table.bin artifact/
+          cp build/*.bin artifact/
+          sha256sum artifact/* > artifact/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(matrix.name, 'posture-')
+        with:
+          name: esp32s3-${{ matrix.name }}-${{ github.sha }}
+          path: ${{ matrix.project }}/artifact
+          if-no-files-found: error

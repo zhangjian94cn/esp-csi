@@ -4,4 +4,4 @@ dependencies:
   espressif/led_strip: "^3.0.0"
 
   esp_wifi_sensing:
-    version: '>=0.1.1'
+    version: '==0.1.1~2'
