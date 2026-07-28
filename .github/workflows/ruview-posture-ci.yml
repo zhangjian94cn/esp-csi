@@ -14,7 +14,7 @@ on:
 jobs:
   firmware:
     runs-on: ubuntu-latest
-    container: espressif/idf:v5.5.0
+    container: espressif/idf@sha256:00e94c6ff8bc1f7bd22b234ff43db3f3056cb33dedac6819df9fbedbcb5c6ebb
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +40,8 @@ jobs:
         env:
           SDKCONFIG_DEFAULTS: ${{ matrix.defaults }}
         run: |
+          idf.py --version | tee /tmp/idf-version.txt
+          grep -Eq 'v?5\.5(\.0)?([^0-9]|$)' /tmp/idf-version.txt
           idf.py set-target esp32s3
           idf.py build
           test -f build/flasher_args.json
