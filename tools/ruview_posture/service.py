@@ -168,17 +168,17 @@ class LiveState:
     def ingest(self, host_timestamp_ns: int, datagram: bytes) -> None:
         packet = decode_packet(datagram)
         monotonic_ns = time.monotonic_ns()
-        self.experiment.ingest(
-            host_timestamp_ns, monotonic_ns, datagram, packet
-        )
+        if isinstance(packet, CsiPacket):
+            if not self._packet_matches_topology(packet):
+                return
+        elif packet.node_id not in self.required_nodes:
+            return
+        self.experiment.ingest(host_timestamp_ns, monotonic_ns, datagram, packet)
         with self.lock:
             if isinstance(packet, CsiPacket):
-                if self._packet_matches_topology(packet):
-                    self.frames[packet.node_id].append(
-                        RecordedPacket(host_timestamp_ns, datagram, packet)
-                    )
-                return
-            if packet.node_id not in self.required_nodes:
+                self.frames[packet.node_id].append(
+                    RecordedPacket(host_timestamp_ns, datagram, packet)
+                )
                 return
             previous = self.reboot_counts.get(packet.node_id)
             if previous is not None and previous != packet.reboot_count:
