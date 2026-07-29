@@ -83,8 +83,14 @@ def run(args: argparse.Namespace) -> int:
                 output.write(
                     json.dumps(
                         {
+                            "schema": "rvp-camera-label-v2",
                             "timestamp_ns": time.time_ns(),
-                            "label": label,
+                            "occupancy": (
+                                "absent" if label == "absent" else "present"
+                            ),
+                            "posture": (
+                                "unknown" if label == "absent" else label
+                            ),
                             "confidence": confidence,
                         },
                         sort_keys=True,

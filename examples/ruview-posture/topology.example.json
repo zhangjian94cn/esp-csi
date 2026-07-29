@@ -1,0 +1,55 @@
+{
+  "schema": "rvp-topology-v1",
+  "room": {
+    "width_m": 4.0,
+    "length_m": 5.0,
+    "height_m": 2.8
+  },
+  "channel": 6,
+  "bandwidth_mhz": 20,
+  "probe_rate_hz": 100,
+  "nodes": [
+    {
+      "node_id": 1,
+      "role": "tx",
+      "mac": "28:84:85:92:81:3c",
+      "position": {
+        "x_m": 0.0,
+        "y_m": 2.5,
+        "z_m": 1.2
+      }
+    },
+    {
+      "node_id": 2,
+      "role": "rx",
+      "mac": "e0:72:a1:fd:19:0c",
+      "position": {
+        "x_m": 4.0,
+        "y_m": 2.5,
+        "z_m": 0.8
+      }
+    },
+    {
+      "node_id": 3,
+      "role": "rx",
+      "mac": "28:84:85:45:f1:28",
+      "position": {
+        "x_m": 2.0,
+        "y_m": 5.0,
+        "z_m": 1.5
+      }
+    }
+  ],
+  "zones": [
+    "zone-1",
+    "zone-2",
+    "zone-3",
+    "zone-4",
+    "zone-5",
+    "zone-6"
+  ],
+  "environment": {
+    "fan": "record measured location",
+    "curtain": "record measured location"
+  }
+}

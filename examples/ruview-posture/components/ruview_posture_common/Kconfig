@@ -14,4 +14,13 @@ config RVP_LED_GPIO
     depends on RVP_LED_ENABLE
     default 48
 
+config RVP_BUILD_ID
+    string "Firmware build identifier"
+    default "dev-unverified"
+
+config RVP_PROBE_RATE_HZ
+    int "Controlled probe frequency"
+    range 50 100
+    default 100
+
 endmenu

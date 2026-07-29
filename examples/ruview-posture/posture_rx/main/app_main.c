@@ -14,6 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 
 #include "esp_csi_gain_ctrl.h"
@@ -51,6 +52,14 @@ static uint32_t s_frames_received;
 static uint32_t s_frames_sent;
 static uint32_t s_frames_dropped;
 static uint32_t s_last_sequence;
+static uint16_t s_reboot_count;
+static bool s_gain_locked;
+static bool s_tx_probe_valid;
+static uint16_t s_tx_probe_rate_hz;
+
+#ifndef RVP_SOURCE_BUILD_ID
+#define RVP_SOURCE_BUILD_ID CONFIG_RVP_BUILD_ID
+#endif
 
 static void init_nvs(void)
 {
@@ -61,6 +70,25 @@ static void init_nvs(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+}
+
+static uint16_t increment_reboot_count(void)
+{
+    nvs_handle_t handle;
+    ESP_ERROR_CHECK(nvs_open("rvp_status", NVS_READWRITE, &handle));
+    uint32_t count = 0;
+    esp_err_t err = nvs_get_u32(handle, "reboots", &count);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(handle);
+        ESP_ERROR_CHECK(err);
+    }
+    if (count < UINT16_MAX) {
+        count++;
+    }
+    ESP_ERROR_CHECK(nvs_set_u32(handle, "reboots", count));
+    ESP_ERROR_CHECK(nvs_commit(handle));
+    nvs_close(handle);
+    return (uint16_t)count;
 }
 
 static bool current_sink(struct sockaddr_in *sink)
@@ -181,14 +209,25 @@ static void stream_task(void *arg)
                 .uptime_ms = (uint32_t)(now / 1000LL),
                 .channel = s_channel,
                 .bandwidth = 20,
+                .flags =
+                    (s_gain_locked ? RVP_STATUS_FLAG_GAIN_LOCKED : 0U) |
+                    (sink_valid ? RVP_STATUS_FLAG_SINK_VALID : 0U) |
+                    (s_tx_probe_valid
+                         ? RVP_STATUS_FLAG_TX_PROBE_VALID
+                         : 0U),
                 .frames_received = s_frames_received,
                 .frames_sent = s_frames_sent,
                 .frames_dropped = s_frames_dropped,
                 .last_sequence = s_last_sequence,
+                .probe_rate_hz = s_tx_probe_rate_hz,
+                .reboot_count = s_reboot_count,
             };
             memcpy(status.tx_mac, s_tx_mac, sizeof(status.tx_mac));
             memcpy(status.rx_mac, s_rx_mac, sizeof(status.rx_mac));
-            snprintf(status.build_id, sizeof(status.build_id), "%.15s", "8633d671-rvp1");
+            snprintf(status.build_id,
+                     sizeof(status.build_id),
+                     "%.15s",
+                     RVP_SOURCE_BUILD_ID);
             (void)sendto(sock,
                          &status,
                          sizeof(status),
@@ -213,15 +252,42 @@ static void csi_rx_cb(void *ctx, wifi_csi_info_t *info)
         csi_len = RVP_MAX_CSI_BYTES;
     }
 
-    uint32_t sequence = s_frames_received;
-    if (info->payload && info->rx_ctrl.sig_len >= 19U) {
-        memcpy(&sequence, info->payload + 15, sizeof(sequence));
+    rvp_probe_payload_t probe = {0};
+    if (!info->payload ||
+        info->rx_ctrl.sig_len < 15U + sizeof(rvp_probe_payload_t)) {
+        return;
     }
+    memcpy(&probe, info->payload + 15, sizeof(probe));
+    if (probe.magic != RVP_PROBE_MAGIC ||
+        probe.version != RVP_PROTOCOL_VERSION ||
+        probe.probe_rate_hz != CONFIG_RVP_PROBE_RATE_HZ) {
+        return;
+    }
+    s_tx_probe_valid = true;
+    s_tx_probe_rate_hz = probe.probe_rate_hz;
+    uint32_t sequence = probe.sequence;
 
     uint8_t agc_gain = 0;
     int8_t fft_gain = 0;
     float gain_compensation = 1.0f;
     esp_csi_gain_ctrl_get_rx_gain(&info->rx_ctrl, &agc_gain, &fft_gain);
+    if (!s_gain_locked) {
+        if (s_frames_received < 100U) {
+            esp_csi_gain_ctrl_record_rx_gain(agc_gain, fft_gain);
+        } else {
+            uint8_t agc_baseline = 0;
+            int8_t fft_baseline = 0;
+            esp_csi_gain_ctrl_get_rx_gain_baseline(
+                &agc_baseline, &fft_baseline);
+            esp_csi_gain_ctrl_set_rx_force_gain(agc_baseline, fft_baseline);
+            s_gain_locked = true;
+            ESP_LOGI(TAG,
+                     "gain locked agc=%u fft=%d after %" PRIu32 " frames",
+                     agc_baseline,
+                     fft_baseline,
+                     s_frames_received);
+        }
+    }
     esp_csi_gain_ctrl_get_gain_compensation(
         &gain_compensation,
         agc_gain,
@@ -244,7 +310,8 @@ static void csi_rx_cb(void *ctx, wifi_csi_info_t *info)
     queued.header.agc_gain = agc_gain;
     queued.header.csi_len = (uint16_t)csi_len;
     queued.header.flags =
-        info->first_word_invalid ? RVP_CSI_FLAG_FIRST_WORD_INVALID : 0U;
+        (info->first_word_invalid ? RVP_CSI_FLAG_FIRST_WORD_INVALID : 0U) |
+        RVP_CSI_FLAG_PROBE_VALID;
     float gain_q8 = gain_compensation * 256.0f;
     if (gain_q8 > INT16_MAX) {
         gain_q8 = INT16_MAX;
@@ -301,6 +368,7 @@ static void init_esp_now_and_csi(void)
 void app_main(void)
 {
     init_nvs();
+    s_reboot_count = increment_reboot_count();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(example_connect());

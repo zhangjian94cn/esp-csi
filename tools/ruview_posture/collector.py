@@ -21,6 +21,7 @@ from .protocol import (
     decode_packet,
     encode_discovery,
 )
+from .labels import TrialLabels
 from .recording import RecordingWriter
 
 
@@ -45,16 +46,25 @@ def collect(args: argparse.Namespace) -> int:
         print(json.dumps({"state": "countdown", "seconds": args.delay}))
         time.sleep(args.delay)
 
+    labels = TrialLabels(
+        occupancy=args.occupancy,
+        motion=args.motion,
+        posture=args.posture,
+        event=args.event,
+        zone_id=args.zone_id,
+        fan_state=args.fan_state,
+        curtain_state=args.curtain_state,
+        trial_id=args.trial_id,
+        dataset_role=args.dataset_role,
+    )
+    labels.validate()
     metadata = {
-        "schema": "rvp-recording-v1",
+        "schema": "rvp-recording-v2",
         "session_id": args.session_id,
-        "trial_id": args.trial_id,
-        "zone_id": args.zone_id,
-        "label": args.label,
-        "dataset_role": args.dataset_role,
         "topology_id": args.topology_id,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "camera_labels": str(args.camera_labels) if args.camera_labels else None,
+        **labels.as_metadata(),
     }
     stop = threading.Event()
     broadcaster = DiscoveryBroadcaster(sink_port=args.port, stop=stop)
@@ -104,6 +114,9 @@ def collect(args: argparse.Namespace) -> int:
                 "tx_mac": status.tx_mac,
                 "rx_mac": status.rx_mac,
                 "frames_dropped": status.frames_dropped,
+                "probe_rate_hz": status.probe_rate_hz,
+                "gain_locked": status.gain_locked,
+                "reboot_count": status.reboot_count,
             }
             for node, status in sorted(statuses.items())
         },
@@ -117,22 +130,46 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--trial-id", required=True)
-    parser.add_argument("--zone-id", default="unknown")
+    parser.add_argument("--zone-id", required=True)
     parser.add_argument(
-        "--label",
-        required=True,
-        choices=[
-            "absent",
-            "standing",
-            "sitting",
-            "lying",
-            "moving",
-            "fall",
-            "slow_lying",
-        ],
+        "--occupancy", choices=["absent", "present"], required=True
     )
     parser.add_argument(
-        "--dataset-role", choices=["train", "blind"], default="train"
+        "--motion", choices=["idle", "moving", "unknown"], required=True
+    )
+    parser.add_argument(
+        "--posture",
+        choices=["standing", "sitting", "lying", "unknown"],
+        required=True,
+    )
+    parser.add_argument(
+        "--event",
+        choices=[
+            "none",
+            "enter",
+            "exit",
+            "fall",
+            "slow_lying",
+            "sit_down",
+            "stand_up",
+            "pick_up",
+            "motion_start",
+            "motion_stop",
+        ],
+        default="none",
+    )
+    parser.add_argument(
+        "--fan-state", choices=["off", "on", "unknown"], default="unknown"
+    )
+    parser.add_argument(
+        "--curtain-state",
+        choices=["off", "on", "unknown"],
+        default="unknown",
+    )
+    parser.add_argument(
+        "--dataset-role",
+        choices=["train", "blind", "benchmark", "repeat"],
+        default="train",
     )
     parser.add_argument("--topology-id", required=True)
     parser.add_argument("--camera-labels", type=Path)

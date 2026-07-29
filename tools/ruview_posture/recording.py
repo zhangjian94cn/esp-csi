@@ -57,11 +57,16 @@ class RecordingWriter(AbstractContextManager["RecordingWriter"]):
         self._file.close()
         os.replace(self.partial, self.output)
 
+    def abort(self) -> None:
+        if not self._file.closed:
+            self._file.close()
+        self.partial.unlink(missing_ok=True)
+
     def __exit__(self, exc_type, exc, traceback) -> None:
         if exc_type is None:
             self.close()
         else:
-            self._file.close()
+            self.abort()
 
 
 def _open_recording(path: Path) -> tuple[BinaryIO, dict[str, Any]]:

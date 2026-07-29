@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import struct
 from typing import Union
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 CSI_MAGIC = 0x31505652
 STATUS_MAGIC = 0x53505652
 DISCOVERY_MAGIC = 0x44505652
@@ -15,7 +15,7 @@ DISCOVERY_PORT = 5007
 MAX_CSI_BYTES = 512
 
 CSI_HEADER = struct.Struct("<IBBBBIQ6s6sBBbbbBHHhI")
-STATUS = struct.Struct("<IBBBBI6s6sBBHIIII16sI")
+STATUS = struct.Struct("<IBBBBI6s6sBBHIIII16sHH")
 DISCOVERY = struct.Struct("<IBBHII")
 
 assert CSI_HEADER.size == 48
@@ -68,9 +68,22 @@ class StatusPacket:
     frames_dropped: int
     last_sequence: int
     build_id: str
+    probe_rate_hz: int
+    reboot_count: int
+
+    @property
+    def gain_locked(self) -> bool:
+        return bool(self.flags & STATUS_FLAG_GAIN_LOCKED)
 
 
 Packet = Union[CsiPacket, StatusPacket]
+
+STATUS_FLAG_GAIN_LOCKED = 1 << 0
+STATUS_FLAG_SINK_VALID = 1 << 1
+STATUS_FLAG_TX_PROBE_VALID = 1 << 2
+CSI_FLAG_FIRST_WORD_INVALID = 1 << 0
+CSI_FLAG_SINK_VALID = 1 << 1
+CSI_FLAG_PROBE_VALID = 1 << 2
 
 
 def decode_packet(datagram: bytes) -> Packet:
@@ -130,6 +143,8 @@ def decode_packet(datagram: bytes) -> Packet:
             frames_dropped=values[13],
             last_sequence=values[14],
             build_id=values[15].split(b"\0", 1)[0].decode("ascii", errors="replace"),
+            probe_rate_hz=values[16],
+            reboot_count=values[17],
         )
 
     raise ProtocolError(

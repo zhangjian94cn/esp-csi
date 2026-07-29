@@ -7,6 +7,7 @@ from ..protocol import (
     DISCOVERY,
     STATUS,
     CsiPacket,
+    PROTOCOL_VERSION,
     ProtocolError,
     StatusPacket,
     decode_packet,
@@ -37,6 +38,9 @@ class ProtocolTest(unittest.TestCase):
         self.assertIsInstance(packet, StatusPacket)
         self.assertEqual(packet.frames_sent, 245)
         self.assertEqual(packet.build_id, "8633d671-rvp1")
+        self.assertEqual(packet.probe_rate_hz, 100)
+        self.assertEqual(packet.reboot_count, 3)
+        self.assertTrue(packet.gain_locked)
 
     def test_rejects_length_mismatch(self) -> None:
         with self.assertRaises(ProtocolError):
@@ -47,7 +51,7 @@ class ProtocolTest(unittest.TestCase):
     def test_discovery_is_versioned(self) -> None:
         packet = encode_discovery(sink_port=5006, nonce=123)
         magic, version, _, port, nonce, ttl = DISCOVERY.unpack(packet)
-        self.assertEqual(version, 1)
+        self.assertEqual(version, PROTOCOL_VERSION)
         self.assertEqual(port, 5006)
         self.assertEqual(nonce, 123)
         self.assertEqual(ttl, 10_000)

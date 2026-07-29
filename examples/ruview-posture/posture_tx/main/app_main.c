@@ -20,8 +20,6 @@
 #include "protocol_examples_common.h"
 #include "ruview_posture_protocol.h"
 
-#define RVP_SEND_FREQUENCY_HZ 50U
-
 static const char *TAG = "rvp_tx";
 static const uint8_t s_broadcast_mac[6] = {
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff
@@ -81,16 +79,23 @@ void app_main(void)
              CONFIG_RVP_NODE_ID,
              MAC2STR(own_mac),
              ap.primary,
-             RVP_SEND_FREQUENCY_HZ);
+             CONFIG_RVP_PROBE_RATE_HZ);
 
-    const TickType_t interval = pdMS_TO_TICKS(1000U / RVP_SEND_FREQUENCY_HZ);
+    const TickType_t interval =
+        pdMS_TO_TICKS(1000U / CONFIG_RVP_PROBE_RATE_HZ);
     TickType_t next_wake = xTaskGetTickCount();
     uint32_t sequence = 0;
     while (true) {
+        rvp_probe_payload_t payload = {
+            .magic = RVP_PROBE_MAGIC,
+            .version = RVP_PROTOCOL_VERSION,
+            .probe_rate_hz = CONFIG_RVP_PROBE_RATE_HZ,
+            .sequence = sequence,
+        };
         esp_err_t err = esp_now_send(
             s_broadcast_mac,
-            (const uint8_t *)&sequence,
-            sizeof(sequence));
+            (const uint8_t *)&payload,
+            sizeof(payload));
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "send sequence=%" PRIu32 " failed: %s",
                      sequence, esp_err_to_name(err));

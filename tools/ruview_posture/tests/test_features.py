@@ -11,6 +11,7 @@ from ..features import (
     FEATURE_SCHEMA_HASH,
     extract_recording_windows,
     feature_names,
+    head_feature_indices,
 )
 from ..recording import RecordingWriter
 from .fixtures import csi_datagram
@@ -59,6 +60,14 @@ class FeaturesTest(unittest.TestCase):
             np.testing.assert_array_equal(first[0].vector, second[0].vector)
             self.assertEqual(len(FEATURE_SCHEMA_HASH), 64)
             self.assertEqual(first[0].node_ids, (2, 3))
+            self.assertEqual(first[0].structure_stability_per_node, (1.0, 1.0))
+            self.assertGreater(len(head_feature_indices("presence")), 0)
+            self.assertGreater(len(head_feature_indices("motion")), 0)
+            self.assertTrue(
+                set(head_feature_indices("presence")).isdisjoint(
+                    set(head_feature_indices("motion"))
+                )
+            )
 
 
 if __name__ == "__main__":
