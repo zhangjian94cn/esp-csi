@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
 from pathlib import Path
 import numpy as np
 
-from .fall import FallDetector
+from .fall import FallModel
 from .features import extract_recording_windows
 from .inference import PosturePredictor, Prediction
 from .labels import labels_from_metadata
@@ -56,6 +57,20 @@ def evaluate(args: argparse.Namespace) -> int:
         topology_id=topology["topology_id"],
         firmware=firmware,
     )
+    fall_model: FallModel | None = None
+    if args.profile == "fall":
+        if args.fall_model is None:
+            raise ValueError("fall evaluation requires --fall-model")
+        fall_model = FallModel.load(args.fall_model)
+        failures = fall_model.validate_binding(
+            posture_model_id=predictor.manifest.model_id,
+            topology_id=topology["topology_id"],
+            motion_calibration_id=predictor.manifest.calibration_id,
+        )
+        if failures:
+            raise ValueError("fall model binding mismatch: " + ", ".join(failures))
+    elif args.fall_model is not None:
+        raise ValueError("--fall-model is only valid for the fall profile")
 
     expected_posture: list[str] = []
     predicted_posture: list[str] = []
@@ -67,6 +82,8 @@ def evaluate(args: argparse.Namespace) -> int:
     absent_false_positive = 0
     present_total = 0
     present_true_positive = 0
+    static_zone_total: dict[str, int] = defaultdict(int)
+    static_zone_true_positive: dict[str, int] = defaultdict(int)
     moving_total = 0
     moving_true_positive = 0
     still_total = 0
@@ -96,9 +113,7 @@ def evaluate(args: argparse.Namespace) -> int:
         if not windows:
             raise ValueError(f"{recording} contains no valid two-link windows")
         predictor.reset()
-        fall = FallDetector(
-            motion_threshold=predictor.manifest.fall_motion_threshold
-        )
+        fall = fall_model.detector() if fall_model else None
         trial_alerted = False
         first_fall_ns: int | None = None
         profile_target = _transition_target(args.profile, labels.event)
@@ -126,6 +141,11 @@ def evaluate(args: argparse.Namespace) -> int:
             else:
                 present_total += 1
                 present_true_positive += int(presence == "present")
+                if labels.motion == "idle":
+                    static_zone_total[labels.zone_id] += 1
+                    static_zone_true_positive[labels.zone_id] += int(
+                        presence == "present"
+                    )
 
             if labels.occupancy == "present" and labels.motion == "moving":
                 moving_total += 1
@@ -172,14 +192,15 @@ def evaluate(args: argparse.Namespace) -> int:
                     window.end_ns - int(transition_at_ns)
                 ) / 1_000_000_000.0
 
-            fall_decision = fall.update(
-                now_ms=window.end_ns // 1_000_000,
-                posture=prediction.posture.label,
-                motion_energy=window.motion_energy,
-            )
-            if fall_decision.event == "suspected" and not trial_alerted:
-                trial_alerted = True
-                first_fall_ns = window.end_ns
+            if fall is not None:
+                fall_decision = fall.update(
+                    now_ms=window.end_ns // 1_000_000,
+                    posture=prediction.posture.label,
+                    motion_energy=window.motion_energy,
+                )
+                if fall_decision.event == "suspected" and not trial_alerted:
+                    trial_alerted = True
+                    first_fall_ns = window.end_ns
 
         if profile_target is not None:
             transition_trials += 1
@@ -209,6 +230,11 @@ def evaluate(args: argparse.Namespace) -> int:
     presence_recall = (
         present_true_positive / present_total if present_total else 0.0
     )
+    static_zone_recall = {
+        zone: static_zone_true_positive[zone] / total
+        for zone, total in sorted(static_zone_total.items())
+        if total
+    }
     motion_recall = (
         moving_true_positive / moving_total if moving_total else 0.0
     )
@@ -241,6 +267,8 @@ def evaluate(args: argparse.Namespace) -> int:
             "absent_false_positive_rate": absent_total > 0
             and absent_fpr <= 0.05,
             "presence_recall": present_total > 0 and presence_recall >= 0.90,
+            "six_static_zones": len(static_zone_recall) >= 6
+            and all(recall >= 0.85 for recall in static_zone_recall.values()),
             "transition_latency": transition_trials >= 20
             and not missing_transition_trials
             and transition_p95 is not None
@@ -282,12 +310,14 @@ def evaluate(args: argparse.Namespace) -> int:
         "schema": "rvp-acceptance-v2",
         "profile": args.profile,
         "model_id": predictor.manifest.model_id,
+        "fall_model_id": fall_model.fall_model_id if fall_model else None,
         "topology_id": topology["topology_id"],
         "recording_hashes": sorted(recording_hashes),
         "blind_dataset_hash": aggregate_hash(recording_hashes),
         "metrics": {
             "absent_false_positive_rate": absent_fpr,
             "presence_recall": presence_recall,
+            "static_zone_recall": static_zone_recall,
             "motion_recall": motion_recall,
             "still_false_motion_rate": still_motion_fpr,
             "unknown_rate": unknown_rate,
@@ -321,6 +351,7 @@ def main() -> int:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--topology", type=Path, required=True)
     parser.add_argument("--firmware-binding", type=Path, required=True)
+    parser.add_argument("--fall-model", type=Path)
     parser.add_argument(
         "--profile",
         choices=["presence", "motion", "posture", "fall"],

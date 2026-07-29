@@ -13,9 +13,9 @@ import threading
 import time
 from typing import Any
 
-from .acceptance import capabilities, load_activation
+from .acceptance import capabilities, load_acceptance, load_activation
 from .experiment import ExperimentSessionManager, SessionConflict
-from .fall import FallDetector
+from .fall import FallModel
 from .features import STEP_NS, WINDOW_NS, extract_window
 from .inference import PosturePredictor
 from .model import FirmwareBinding
@@ -78,11 +78,14 @@ class LiveState:
         acceptance: dict[str, dict[str, Any]],
         event_log: Path,
         recordings_directory: Path,
+        validation_mode: bool = False,
+        fall_model: FallModel | None = None,
     ):
         self.predictor = predictor
         self.topology = topology
         self.firmware = firmware
         self.acceptance = acceptance
+        self.validation_mode = validation_mode
         self.capabilities = capabilities(acceptance)
         self.event_log = event_log
         nodes = node_map(topology)
@@ -101,13 +104,10 @@ class LiveState:
         self.stable_presence = StableValue({"present": 3, "absent": 4})
         self.stable_motion = StableValue(3)
         self.stable_posture = StableValue(3)
-        self.fall = (
-            FallDetector(
-                motion_threshold=predictor.manifest.fall_motion_threshold
-            )
-            if predictor is not None
-            else None
-        )
+        if self.capabilities["fall"] and fall_model is None:
+            raise ValueError("fall capability requires a bound fall model")
+        self.fall_model = fall_model
+        self.fall = fall_model.detector() if fall_model else None
         self.experiment = ExperimentSessionManager(
             output_directory=recordings_directory,
             topology_id=topology["topology_id"],
@@ -120,13 +120,34 @@ class LiveState:
         return self.predictor.manifest.model_id if self.predictor else None
 
     def _model_payload(self) -> dict[str, Any]:
+        if self.validation_mode:
+            activation_state = "validation"
+        elif self.predictor and self.acceptance:
+            activation_state = "active"
+        elif self.predictor:
+            activation_state = "shadow"
+        else:
+            activation_state = "raw"
         return {
             "loaded": self.predictor is not None,
             "model_id": self.model_id,
             "topology_id": self.topology["topology_id"],
             "accepted_profiles": sorted(self.acceptance),
             "probe_rate_hz": self.firmware.probe_rate_hz,
+            "activation_state": activation_state,
+            "fall_model_id": (
+                self.fall_model.fall_model_id if self.fall_model else None
+            ),
         }
+
+    def _source(self) -> str:
+        if self.validation_mode:
+            return "esp_csi_validation_model"
+        if self.predictor and self.acceptance:
+            return "esp_csi_local_posture_model"
+        if self.predictor:
+            return "esp_csi_shadow_model"
+        return "esp_csi_raw_data_plane"
 
     def _unknown(
         self, reason: str, link_quality: list[dict[str, Any]] | None = None
@@ -137,11 +158,7 @@ class LiveState:
             "fall_event": "none",
             "valid": False,
             "confidence": 0.0,
-            "source": (
-                "esp_csi_shadow_model"
-                if self.predictor
-                else "esp_csi_raw_data_plane"
-            ),
+            "source": self._source(),
             "model_id": self.model_id,
             "topology_id": self.topology["topology_id"],
             "reason": reason,
@@ -372,7 +389,7 @@ class LiveState:
             "fall_event": fall_event,
             "valid": True,
             "confidence": prediction.confidence,
-            "source": "esp_csi_local_posture_model",
+            "source": self._source(),
             "model_id": self.model_id,
             "topology_id": self.topology["topology_id"],
             "motion_energy": window.motion_energy,
@@ -390,6 +407,11 @@ class LiveState:
                     "event": "fall_suspected",
                     "timestamp_ns": now_ns,
                     "model_id": self.model_id,
+                    "fall_model_id": (
+                        self.fall_model.fall_model_id
+                        if self.fall_model
+                        else None
+                    ),
                     "confidence": prediction.confidence,
                 }
                 self.events.append(event)
@@ -482,15 +504,41 @@ def run(args: argparse.Namespace) -> int:
         if args.model
         else None
     )
-    acceptance = (
-        load_activation(
+    fall_model = FallModel.load(args.fall_model) if args.fall_model else None
+    if fall_model is not None:
+        if predictor is None:
+            raise ValueError("--fall-model requires --model")
+        fall_failures = fall_model.validate_binding(
+            posture_model_id=predictor.manifest.model_id,
+            topology_id=topology["topology_id"],
+            motion_calibration_id=predictor.manifest.calibration_id,
+        )
+        if fall_failures:
+            raise ValueError(
+                "fall model binding mismatch: " + ", ".join(fall_failures)
+            )
+    if (args.activation or args.validation_acceptance) and predictor is None:
+        raise ValueError("acceptance requires --model")
+    validation_mode = bool(args.validation_acceptance)
+    if predictor and args.validation_acceptance:
+        acceptance = load_acceptance(
+            args.validation_acceptance,
+            model_id=predictor.manifest.model_id,
+            topology_id=topology["topology_id"],
+        )
+    elif predictor and args.activation:
+        acceptance = load_activation(
             args.activation,
             model_id=predictor.manifest.model_id,
             topology_id=topology["topology_id"],
         )
-        if predictor and args.activation
-        else {}
-    )
+    else:
+        acceptance = {}
+    if "fall" in acceptance:
+        if fall_model is None:
+            raise ValueError("fall acceptance requires --fall-model")
+        if acceptance["fall"].get("fall_model_id") != fall_model.fall_model_id:
+            raise ValueError("fall acceptance belongs to a different fall model")
     state = LiveState(
         predictor=predictor,
         topology=topology,
@@ -498,6 +546,8 @@ def run(args: argparse.Namespace) -> int:
         acceptance=acceptance,
         event_log=args.event_log,
         recordings_directory=args.recordings_directory,
+        validation_mode=validation_mode,
+        fall_model=fall_model,
     )
     Handler.state = state
     stop = threading.Event()
@@ -555,7 +605,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", type=Path)
     parser.add_argument("--topology", type=Path, required=True)
     parser.add_argument("--firmware-binding", type=Path, required=True)
-    parser.add_argument("--activation", type=Path)
+    parser.add_argument("--fall-model", type=Path)
+    activation = parser.add_mutually_exclusive_group()
+    activation.add_argument("--activation", type=Path)
+    activation.add_argument(
+        "--validation-acceptance",
+        type=Path,
+        nargs="+",
+        help="passed profile reports for a non-production stability run",
+    )
     parser.add_argument("--csi-port", type=int, default=CSI_PORT)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--http-port", type=int, default=3100)

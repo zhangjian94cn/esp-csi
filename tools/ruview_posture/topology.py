@@ -119,6 +119,23 @@ def normalize_topology(payload: Mapping[str, Any]) -> dict[str, Any]:
     roles = {node["node_id"]: node["role"] for node in nodes}
     if roles != {1: "tx", 2: "rx", 3: "rx"}:
         raise TopologyError("roles must be node 1 tx and nodes 2/3 rx")
+    for left_index, left in enumerate(nodes):
+        for right in nodes[left_index + 1 :]:
+            distance = math.sqrt(
+                sum(
+                    (
+                        left["position"][axis]
+                        - right["position"][axis]
+                    )
+                    ** 2
+                    for axis in ("x_m", "y_m", "z_m")
+                )
+            )
+            if not 2.0 <= distance <= 5.0:
+                raise TopologyError(
+                    f"nodes {left['node_id']} and {right['node_id']} "
+                    f"must be 2-5 metres apart, got {distance:.2f}"
+                )
 
     zones_source = payload.get("zones", [])
     if not isinstance(zones_source, list):

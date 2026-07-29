@@ -8,7 +8,8 @@ import tempfile
 import unittest
 
 from ..labels import TrialLabels
-from ..model import ModelManifest
+from ..inference import PosturePredictor
+from ..model import FirmwareBinding, ModelManifest
 from ..recording import RecordingWriter
 from ..topology import finalize_topology
 from ..train import train
@@ -159,6 +160,20 @@ class TrainingTest(unittest.TestCase):
                 },
             )
             self.assertTrue((output / "model-bundle.joblib").exists())
+            binding = FirmwareBinding.load(firmware_path)
+            PosturePredictor(
+                output,
+                topology_id=topology["topology_id"],
+                firmware=binding,
+            )
+            with (output / "model-bundle.joblib").open("ab") as artifact:
+                artifact.write(b"tampered")
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                PosturePredictor(
+                    output,
+                    topology_id=topology["topology_id"],
+                    firmware=binding,
+                )
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ from typing import Any
 import joblib
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import GroupKFold, cross_val_predict
+from sklearn.model_selection import StratifiedGroupKFold, cross_val_predict
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -45,12 +45,11 @@ class HeadData:
 def _load_training_data(
     recordings: list[Path],
     calibration: MotionCalibration,
-) -> tuple[dict[str, HeadData], list[str], dict[str, list[float]]]:
+) -> tuple[dict[str, HeadData], list[str]]:
     vectors: dict[str, list[np.ndarray]] = {head: [] for head in HEAD_CLASSES}
     targets: dict[str, list[str]] = {head: [] for head in HEAD_CLASSES}
     groups: dict[str, list[str]] = {head: [] for head in HEAD_CLASSES}
     hashes: list[str] = []
-    fall_motion: dict[str, list[float]] = {"fall": [], "nonfall": []}
 
     for recording in recordings:
         metadata = read_metadata(recording)
@@ -84,10 +83,6 @@ def _load_training_data(
                 targets["posture"].append(labels.posture)
                 groups["posture"].append(group)
 
-            fall_motion[
-                "fall" if labels.event == "fall" else "nonfall"
-            ].append(window.motion_energy)
-
     result: dict[str, HeadData] = {}
     for head in HEAD_CLASSES:
         if not vectors[head]:
@@ -102,16 +97,21 @@ def _load_training_data(
             y=y,
             groups=np.asarray(groups[head]),
         )
-    return result, hashes, fall_motion
+    return result, hashes
 
 
 def _logistic_candidate(
     data: HeadData, classes: tuple[str, ...]
 ) -> tuple[Pipeline, dict[str, Any]]:
-    unique_groups = np.unique(data.groups)
-    if len(unique_groups) < 2:
-        raise ValueError("at least two independent trials are required")
-    folds = min(5, len(unique_groups))
+    groups_per_class = {
+        label: len(np.unique(data.groups[data.y == label]))
+        for label in classes
+    }
+    if min(groups_per_class.values()) < 2:
+        raise ValueError(
+            "each class requires at least two independent trials"
+        )
+    folds = min(5, min(groups_per_class.values()))
     model = Pipeline(
         [
             ("scale", StandardScaler()),
@@ -130,7 +130,11 @@ def _logistic_candidate(
         model,
         data.x,
         data.y,
-        cv=GroupKFold(n_splits=folds),
+        cv=StratifiedGroupKFold(
+            n_splits=folds,
+            shuffle=True,
+            random_state=42,
+        ),
         groups=data.groups,
         method="predict",
     )
@@ -145,11 +149,20 @@ def _tcn_candidate(
     sequences, labels, sequence_groups = build_sequences(
         data.x, data.y, data.groups
     )
-    unique_groups = np.unique(sequence_groups)
-    if len(unique_groups) < 2:
-        raise ValueError("at least two sequence groups are required for TCN")
+    groups_per_class = {
+        label: len(np.unique(sequence_groups[labels == label]))
+        for label in classes
+    }
+    if min(groups_per_class.values()) < 2:
+        raise ValueError(
+            "each TCN class requires at least two independent trials"
+        )
     predictions = np.empty_like(labels)
-    folds = GroupKFold(n_splits=min(5, len(unique_groups)))
+    folds = StratifiedGroupKFold(
+        n_splits=min(5, min(groups_per_class.values())),
+        shuffle=True,
+        random_state=42,
+    )
     for train_indexes, test_indexes in folds.split(
         sequences, labels, sequence_groups
     ):
@@ -164,18 +177,6 @@ def _tcn_candidate(
     metrics = macro_metrics(labels, predictions, classes)
     artifact = fit_tcn(sequences, labels, classes=classes)
     return artifact, metrics
-
-
-def _fall_threshold(motion: dict[str, list[float]]) -> float:
-    nonfall = motion["nonfall"]
-    fall = motion["fall"]
-    if not nonfall:
-        raise ValueError("non-fall motion samples are required")
-    nonfall_limit = float(np.percentile(nonfall, 99))
-    if not fall:
-        return nonfall_limit * 1.5
-    fall_floor = float(np.percentile(fall, 20))
-    return (nonfall_limit + fall_floor) / 2.0
 
 
 def train(args: argparse.Namespace) -> int:
@@ -193,7 +194,7 @@ def train(args: argparse.Namespace) -> int:
         topology_id=topology["topology_id"],
         probe_rate_hz=firmware.probe_rate_hz,
     )
-    data, recording_hashes, fall_motion = _load_training_data(
+    data, recording_hashes = _load_training_data(
         args.recordings,
         calibration,
     )
@@ -225,16 +226,18 @@ def train(args: argparse.Namespace) -> int:
         }
 
     calibration_id = calibration.calibration_id
+    args.output.mkdir(parents=True, exist_ok=True)
+    artifact_path = args.output / "model-bundle.joblib"
+    joblib.dump(artifacts, artifact_path)
+    model_artifact_sha256 = recording_sha256(artifact_path)
     model_id = derive_model_id(
         topology_id=topology["topology_id"],
         head_kinds=head_kinds,
         recording_hashes=recording_hashes,
         calibration_id=calibration_id,
         firmware=firmware,
+        model_artifact_sha256=model_artifact_sha256,
     )
-    args.output.mkdir(parents=True, exist_ok=True)
-    artifact_path = args.output / "model-bundle.joblib"
-    joblib.dump(artifacts, artifact_path)
     manifest = ModelManifest(
         schema="rvp-model-bundle-v2",
         model_id=model_id,
@@ -247,6 +250,7 @@ def train(args: argparse.Namespace) -> int:
         probe_rate_hz=firmware.probe_rate_hz,
         firmware_build_ids=firmware.build_ids,
         firmware_artifact_sha256=firmware.artifact_sha256,
+        model_artifact_sha256=model_artifact_sha256,
         training_recordings=tuple(sorted(recording_hashes)),
         training_data_hash=aggregate_hash(recording_hashes),
         calibration_id=calibration_id,
@@ -256,7 +260,6 @@ def train(args: argparse.Namespace) -> int:
         confidence_thresholds={
             head: args.confidence_threshold for head in HEAD_CLASSES
         },
-        fall_motion_threshold=_fall_threshold(fall_motion),
         metrics=metrics,
     )
     manifest.save(args.output / "manifest.json")

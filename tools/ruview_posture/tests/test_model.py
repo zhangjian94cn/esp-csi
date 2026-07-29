@@ -72,6 +72,7 @@ class ModelBindingTest(unittest.TestCase):
             probe_rate_hz=binding.probe_rate_hz,
             firmware_build_ids=binding.build_ids,
             firmware_artifact_sha256=binding.artifact_sha256,
+            model_artifact_sha256="f" * 64,
             training_recordings=("hash",),
             training_data_hash="0" * 64,
             calibration_id=calibration.calibration_id,
@@ -87,7 +88,6 @@ class ModelBindingTest(unittest.TestCase):
                 "motion": 0.65,
                 "posture": 0.65,
             },
-            fall_motion_threshold=2.0,
             metrics={},
         )
         self.assertEqual(

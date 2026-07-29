@@ -53,7 +53,7 @@ def monitor(args: argparse.Namespace) -> int:
 
     elapsed = time.monotonic() - started
     result = {
-        "schema": "rvp-stability-v1",
+        "schema": "rvp-stability-v2",
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "duration_seconds": elapsed,
         "samples": samples,
@@ -63,6 +63,7 @@ def monitor(args: argparse.Namespace) -> int:
         "model_ids": sorted(model_ids),
         "topology_ids": sorted(topology_ids),
         "sources": sorted(sources),
+        "expected_source": args.expected_source,
         "capability_failures": capability_failures,
         "required_capabilities": sorted(set(args.require_capability)),
         "link_failures": link_failures,
@@ -71,7 +72,7 @@ def monitor(args: argparse.Namespace) -> int:
             and failures == 0
             and len(model_ids) == 1
             and len(topology_ids) == 1
-            and sources == {"esp_csi_local_posture_model"}
+            and sources == {args.expected_source}
             and capability_failures == 0
             and link_failures == 0
             and invalid / samples <= 0.10
@@ -92,6 +93,14 @@ def main() -> int:
     )
     parser.add_argument("--duration", type=float, default=7200.0)
     parser.add_argument("--interval", type=float, default=1.0)
+    parser.add_argument(
+        "--expected-source",
+        choices=[
+            "esp_csi_validation_model",
+            "esp_csi_local_posture_model",
+        ],
+        default="esp_csi_validation_model",
+    )
     parser.add_argument(
         "--require-capability",
         action="append",

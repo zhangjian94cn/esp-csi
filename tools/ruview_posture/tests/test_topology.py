@@ -65,3 +65,14 @@ def test_modified_topology_invalidates_id(tmp_path: Path) -> None:
     path.write_text(json.dumps(finalized))
     with pytest.raises(TopologyError, match="does not match"):
         load_topology(path)
+
+
+def test_clustered_boards_are_rejected() -> None:
+    payload = topology()
+    payload["nodes"][1]["position"] = {
+        "x_m": 0.5,
+        "y_m": 2.5,
+        "z_m": 1.0,
+    }
+    with pytest.raises(TopologyError, match="2-5 metres"):
+        finalize_topology(payload)

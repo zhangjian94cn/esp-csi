@@ -162,6 +162,26 @@ Endpoints:
 - `POST /api/v1/experiments/session/cancel`
 - `GET /api/v1/experiments/session/status`
 
+Before collecting labels, run the timed link gates. The command prints a
+countdown before each physical action and saves an atomic report:
+
+```bash
+python -m tools.ruview_posture.link_smoke \
+  --phase baseline --probe-rate-hz 100 \
+  --output ~/.local/share/ruview/reports/link-baseline.json
+python -m tools.ruview_posture.link_smoke \
+  --phase tx_off --probe-rate-hz 100 \
+  --output ~/.local/share/ruview/reports/link-tx-off.json
+python -m tools.ruview_posture.link_smoke \
+  --phase reconnect --probe-rate-hz 100 \
+  --output ~/.local/share/ruview/reports/link-reconnect.json
+```
+
+The baseline requires both links to sustain at least 80 percent of the
+configured probe rate, loss no higher than five percent, and structure
+stability of at least 95 percent. TX-off must invalidate both links within two
+seconds; reconnect must restore both within ten seconds.
+
 Session labels are independent fields:
 
 ```json
@@ -203,6 +223,8 @@ Presence (`absent/present`), Motion (`still/moving`), and Posture
 (`standing/sitting/lying`) are separate heads. Each starts with grouped
 logistic regression. A TCN replaces a head only when grouped validation macro
 F1 improves by at least three points and the worst class does not regress.
+The manifest hash-binds the fixed motion calibration and serialized model
+artifact; a modified artifact is rejected before deserialization.
 
 Train:
 
@@ -230,7 +252,33 @@ python -m tools.ruview_posture.evaluate \
 ```
 
 Repeat for `motion`, then `posture`. Run `fall` only after Posture passes.
-Atomically bind only passed reports to the model:
+Passed blind reports first run in explicit validation mode; they are not yet a
+production activation:
+
+```bash
+python -m tools.ruview_posture.service \
+  --model ~/.local/share/ruview/models/posture-v1 \
+  --topology ~/.local/share/ruview/config/topology.json \
+  --firmware-binding ~/.local/share/ruview/config/firmware-binding.json \
+  --validation-acceptance \
+      ~/.local/share/ruview/reports/presence.json \
+      ~/.local/share/ruview/reports/motion.json \
+      ~/.local/share/ruview/reports/posture.json
+```
+
+Run the two-hour monitor against that validation service:
+
+```bash
+python -m tools.ruview_posture.stability \
+  --duration 7200 \
+  --require-capability presence \
+  --require-capability motion \
+  --require-capability posture \
+  --output ~/.local/share/ruview/reports/stability.json
+```
+
+Only after the stability report passes can the same reports be atomically
+activated:
 
 ```bash
 python -m tools.ruview_posture.activate \
@@ -240,11 +288,49 @@ python -m tools.ruview_posture.activate \
   --acceptance ~/.local/share/ruview/reports/presence.json \
                ~/.local/share/ruview/reports/motion.json \
                ~/.local/share/ruview/reports/posture.json \
+  --stability ~/.local/share/ruview/reports/stability.json \
   --output ~/.local/share/ruview/models/posture-v1/activation.json
 ```
 
 Start accepted inference with `--model` and `--activation`. Without an
 activation record the same model runs shadow-only and the API remains invalid.
+Validation mode reports `source=esp_csi_validation_model`; only a
+stability-bound activation reports `source=esp_csi_local_posture_model`.
 RuView integration stays blocked until locked blind tests and the two-hour
 stability report pass. Skeletons, person count, vital signs, and medical or
 safety claims remain unsupported.
+
+## Independent Fall Stage
+
+Do not add fall trials to the three-head training command. After Posture has
+passed, collect a separate training set with at least 20 protected falls and
+40 non-fall transitions. Fit a JSON fall model bound to the unchanged posture
+model:
+
+```bash
+python -m tools.ruview_posture.train_fall \
+  ~/.local/share/ruview/data/esp-csi/fall-train/*.rvp \
+  --model ~/.local/share/ruview/models/posture-v1 \
+  --topology ~/.local/share/ruview/config/topology.json \
+  --firmware-binding ~/.local/share/ruview/config/firmware-binding.json \
+  --output ~/.local/share/ruview/models/posture-v1/fall-model.json
+```
+
+Collect a new locked fall blind set, then evaluate it without retraining the
+Presence, Motion, or Posture heads:
+
+```bash
+python -m tools.ruview_posture.evaluate \
+  ~/.local/share/ruview/data/esp-csi/fall-blind/*.rvp \
+  --model ~/.local/share/ruview/models/posture-v1 \
+  --fall-model ~/.local/share/ruview/models/posture-v1/fall-model.json \
+  --topology ~/.local/share/ruview/config/topology.json \
+  --firmware-binding ~/.local/share/ruview/config/firmware-binding.json \
+  --profile fall \
+  --output ~/.local/share/ruview/reports/fall.json
+```
+
+Run validation and stability again with all four reports and
+`--fall-model`. Final activation must also include `--fall-model`; its ID and
+file hash are bound into the activation record. The fall model cannot alter or
+invalidate the already accepted three-head artifact.

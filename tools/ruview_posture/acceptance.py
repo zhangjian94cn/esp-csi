@@ -64,8 +64,10 @@ def load_activation(
     path: Path, *, model_id: str, topology_id: str
 ) -> dict[str, dict[str, Any]]:
     payload = json.loads(path.read_text())
-    if payload.get("schema") != "rvp-activation-v1":
+    if payload.get("schema") != "rvp-activation-v2":
         raise ValueError("unsupported activation schema")
+    if payload.get("state") != "active":
+        raise ValueError("activation is not in the active state")
     if payload.get("model_id") != model_id:
         raise ValueError("activation belongs to a different model")
     if payload.get("topology_id") != topology_id:
@@ -87,4 +89,23 @@ def load_activation(
     expected_order = list(PROFILES[: len(accepted)])
     if list(accepted) != expected_order:
         raise ValueError("activation profiles are not in dependency order")
+    fall_model_id = payload.get("fall_model_id")
+    if "fall" in accepted:
+        if (
+            not fall_model_id
+            or accepted["fall"].get("fall_model_id") != fall_model_id
+        ):
+            raise ValueError("activation fall model binding is invalid")
+    elif fall_model_id is not None:
+        raise ValueError("activation has a fall model without fall acceptance")
+    stability = payload.get("stability")
+    if (
+        not isinstance(stability, dict)
+        or stability.get("schema") != "rvp-stability-v2"
+        or not stability.get("passed")
+        or stability.get("model_ids") != [model_id]
+        or stability.get("topology_ids") != [topology_id]
+        or stability.get("sources") != ["esp_csi_validation_model"]
+    ):
+        raise ValueError("activation does not contain matching stability evidence")
     return accepted

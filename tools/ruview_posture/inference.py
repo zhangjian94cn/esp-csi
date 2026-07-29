@@ -12,7 +12,12 @@ import numpy as np
 
 from .calibration import MotionCalibration
 from .features import WindowFeatures, vector_for_head
-from .model import FirmwareBinding, HEAD_CLASSES, ModelManifest
+from .model import (
+    FirmwareBinding,
+    HEAD_CLASSES,
+    ModelManifest,
+    recording_sha256,
+)
 from .tcn import predict_tcn
 
 
@@ -58,9 +63,10 @@ class PosturePredictor:
         self.motion_calibration = MotionCalibration.from_dict(
             self.manifest.motion_calibration
         )
-        self.models: dict[str, Any] = joblib.load(
-            model_directory / "model-bundle.joblib"
-        )
+        artifact_path = model_directory / "model-bundle.joblib"
+        if recording_sha256(artifact_path) != self.manifest.model_artifact_sha256:
+            raise ValueError("model artifact SHA-256 does not match manifest")
+        self.models: dict[str, Any] = joblib.load(artifact_path)
         if set(self.models) != set(HEAD_CLASSES):
             raise ValueError("model bundle does not contain all three heads")
         self.histories: dict[str, deque[np.ndarray]] = {

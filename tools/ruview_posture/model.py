@@ -87,6 +87,7 @@ class ModelManifest:
     probe_rate_hz: int
     firmware_build_ids: dict[str, str]
     firmware_artifact_sha256: dict[str, str]
+    model_artifact_sha256: str
     training_recordings: tuple[str, ...]
     training_data_hash: str
     calibration_id: str
@@ -94,7 +95,6 @@ class ModelManifest:
     head_kinds: dict[str, str]
     classes: dict[str, tuple[str, ...]]
     confidence_thresholds: dict[str, float]
-    fall_motion_threshold: float
     metrics: dict[str, Any]
 
     @classmethod
@@ -131,6 +131,11 @@ class ModelManifest:
             failures.append("esp_csi_commit")
         if self.esp_wifi_sensing_version != ESP_WIFI_SENSING_VERSION:
             failures.append("esp_wifi_sensing_version")
+        if len(self.model_artifact_sha256) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in self.model_artifact_sha256
+        ):
+            failures.append("model_artifact_sha256")
         try:
             calibration = MotionCalibration.from_dict(self.motion_calibration)
         except (KeyError, TypeError, ValueError):
@@ -195,6 +200,7 @@ def derive_model_id(
     recording_hashes: Iterable[str],
     calibration_id: str,
     firmware: FirmwareBinding,
+    model_artifact_sha256: str,
 ) -> str:
     identity = {
         "schema": "rvp-model-bundle-v2",
@@ -208,6 +214,7 @@ def derive_model_id(
         "probe_rate_hz": firmware.probe_rate_hz,
         "firmware_build_ids": firmware.build_ids,
         "firmware_artifact_sha256": firmware.artifact_sha256,
+        "model_artifact_sha256": model_artifact_sha256,
         "calibration_id": calibration_id,
         "recordings": sorted(recording_hashes),
     }

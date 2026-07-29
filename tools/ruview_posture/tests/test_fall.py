@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+import tempfile
 
-from ..fall import FallDetector
+from ..fall import FallDetector, FallModel
 
 
 class FallDetectorTest(unittest.TestCase):
@@ -36,6 +38,40 @@ class FallDetectorTest(unittest.TestCase):
             now_ms=2250, posture="lying", motion_energy=0.1
         )
         self.assertEqual(decision.event, "none")
+
+    def test_fall_model_is_hash_bound_to_posture_model(self) -> None:
+        model = FallModel.create(
+            posture_model_id="posture-model",
+            topology_id="room-a",
+            motion_calibration_id="calibration",
+            training_recordings=("a" * 64, "b" * 64),
+            motion_threshold=0.2,
+            transition_ms=1500,
+            lying_confirmations=2,
+            latch_ms=10_000,
+            metrics={"fall_recall": 0.9},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fall-model.json"
+            model.save(path)
+            loaded = FallModel.load(path)
+        self.assertEqual(loaded, model)
+        self.assertEqual(
+            loaded.validate_binding(
+                posture_model_id="posture-model",
+                topology_id="room-a",
+                motion_calibration_id="calibration",
+            ),
+            [],
+        )
+        self.assertEqual(
+            loaded.validate_binding(
+                posture_model_id="other",
+                topology_id="room-a",
+                motion_calibration_id="calibration",
+            ),
+            ["posture_model_id"],
+        )
 
 
 if __name__ == "__main__":

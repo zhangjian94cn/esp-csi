@@ -58,7 +58,8 @@ def test_activation_rejects_out_of_order_profiles(tmp_path: Path) -> None:
     path.write_text(
         json.dumps(
             {
-                "schema": "rvp-activation-v1",
+                "schema": "rvp-activation-v2",
+                "state": "active",
                 "model_id": "model",
                 "topology_id": "topology",
                 "acceptance": {
@@ -74,4 +75,40 @@ def test_activation_rejects_out_of_order_profiles(tmp_path: Path) -> None:
         )
     )
     with pytest.raises(ValueError, match="dependency order"):
+        load_activation(path, model_id="model", topology_id="topology")
+
+
+def test_activation_requires_matching_validation_stability(
+    tmp_path: Path,
+) -> None:
+    report = {
+        "schema": "rvp-acceptance-v2",
+        "profile": "presence",
+        "model_id": "model",
+        "topology_id": "topology",
+        "passed": True,
+    }
+    payload = {
+        "schema": "rvp-activation-v2",
+        "state": "active",
+        "model_id": "model",
+        "topology_id": "topology",
+        "acceptance": {"presence": report},
+        "stability": {
+            "schema": "rvp-stability-v2",
+            "passed": True,
+            "model_ids": ["model"],
+            "topology_ids": ["topology"],
+            "sources": ["esp_csi_validation_model"],
+        },
+    }
+    path = tmp_path / "activation.json"
+    path.write_text(json.dumps(payload))
+    assert set(
+        load_activation(path, model_id="model", topology_id="topology")
+    ) == {"presence"}
+
+    payload["stability"]["sources"] = ["esp_csi_local_posture_model"]
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="stability evidence"):
         load_activation(path, model_id="model", topology_id="topology")
